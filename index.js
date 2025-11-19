@@ -11,15 +11,19 @@ dotenv.config();
 const app = express();
 app.use(bodyParser.json());
 
+// Root route for testing
+app.get("/", (req, res) => {
+  res.send("WhatsApp backend is running.");
+});
+
 // WhatsApp API details from .env
 const TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_ID = process.env.WHATSAPP_PHONE_ID;
-const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN;
 
 // Google AI
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// Product list (keep simple first)
+// Product list
 const PRODUCTS = {
   "sugar": { price: 40 },
   "oil": { price: 120 },
@@ -86,14 +90,25 @@ function generateInvoice(order, fileName) {
 
 // ---------- WEBHOOK VERIFY ----------
 app.get("/webhook/whatsapp", (req, res) => {
+  const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN;
+
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    return res.status(200).send(challenge);
+  console.log("Verification attempt:", { mode, token });
+
+  if (mode && token) {
+    if (mode === "subscribe" && token === VERIFY_TOKEN) {
+      console.log("Webhook verified!");
+      return res.status(200).send(challenge);
+    } else {
+      console.log("Token mismatch. Expected:", VERIFY_TOKEN, "Got:", token);
+      return res.sendStatus(403);
+    }
   }
-  res.sendStatus(403);
+
+  res.sendStatus(400);
 });
 
 // ---------- WEBHOOK RECEIVE ----------
@@ -101,10 +116,11 @@ app.post("/webhook/whatsapp", async (req, res) => {
   try {
     const data = req.body;
 
-    if (data.entry &&
-        data.entry[0].changes &&
-        data.entry[0].changes[0].value.messages) {
-
+    if (
+      data.entry &&
+      data.entry[0].changes &&
+      data.entry[0].changes[0].value.messages
+    ) {
       const msg = data.entry[0].changes[0].value.messages[0];
       const from = msg.from;
       const text = msg.text?.body || "";
@@ -129,27 +145,14 @@ app.post("/webhook/whatsapp", async (req, res) => {
         quantity: parsed.quantity,
         unit: parsed.unit,
         price: product.price,
-        total: product.price * parsed.quantity
+        total: product.price * parsed.quantity,
       };
 
       const fileName = `invoice-${Date.now()}.pdf`;
-      const filePath = await generateInvoice(order, fileName);
+      await generateInvoice(order, fileName);
 
-      // Send invoice back
-      await axios({
-        method: "POST",
-        url: `https://graph.facebook.com/v17.0/${PHONE_ID}/messages`,
-        headers: { Authorization: `Bearer ${TOKEN}` },
-        data: {
-          messaging_product: "whatsapp",
-          to: from,
-          type: "document",
-          document: {
-            link: `https://yourdomain.com/${fileName}`,
-            caption: "Your Invoice"
-          }
-        }
-      });
+      // Respond success
+      await sendWhatsapp(from, `Order confirmed!\n\nProduct: ${order.product}\nTotal: ₹${order.total}`);
 
       return res.sendStatus(200);
     }
@@ -161,10 +164,8 @@ app.post("/webhook/whatsapp", async (req, res) => {
   }
 });
 
+// ---------- START SERVER ----------
 const PORT = process.env.PORT || 3000;
-
 app.listen(PORT, () => {
   console.log("Server running on port", PORT);
 });
-
-
